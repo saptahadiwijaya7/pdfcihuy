@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PDF Cihuy</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" type="image/x-icon" href="favicon.ico">
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <h1>PDF Cihuy [b.v001]</h1>
+      <p>Laporan Finance #harusnyagampang</p>
+    </div>
+    <div class="actions">
+      <input id="fileNameInput" class="export-name" type="text" placeholder="isi dengan nama file" autocomplete="off" />
+      <button id="exportBtn" disabled>Export PDF</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="dropZone" class="drop-zone">
+      <div class="drop-icon">SAP<br><span>SOFT</span></div>
+      <h2>Tarik file PDF atau gambar ke sini</h2>
+      <p>atau</p>
+      <br/>
+      <label class="file-button">
+        Pilih PDF / Gambar
+        <input id="fileInput" type="file" accept="application/pdf,.pdf,image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" multiple hidden />
+      </label>
+      <small>Bisa pilih banyak file sekaligus: PDF, JPG, JPEG, PNG, atau WEBP.</small>
+    </section>
+
+    <section class="toolbar" aria-label="Toolbar halaman">
+      <div id="status">Belum ada file.</div>
+      <label class="select-all"><input id="selectAllCheckbox" type="checkbox" disabled /> Pilih semua</label>
+      <div class="hint">Tip: drag thumbnail untuk mengubah urutan. Drag file langsung ke area thumbnail untuk menyisipkan file di antara halaman. Bingung? Tanya Kak Sapta</div>
+      <button id="deleteSelectedBtn" class="secondary" disabled>Hapus halaman terpilih</button>
+      <button id="rotateSelectedBtn" class="secondary" disabled>Rotasi 90°</button>
+    </section>
+
+    <section id="pageGrid" class="page-grid" aria-live="polite"></section>
+  </main>
+
+  <div id="previewModal" class="preview-modal" aria-hidden="true">
+    <div class="preview-panel" role="dialog" aria-modal="true" aria-label="Preview halaman">
+      <div class="preview-header">
+        <div>
+          <strong id="previewTitle">Preview halaman</strong>
+          <span id="previewInfo"></span>
+        </div>
+        <button id="closePreviewBtn" class="secondary" type="button">Tutup</button>
+      </div>
+      <div class="preview-body">
+        <canvas id="previewCanvas"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
