@@ -7,6 +7,7 @@ const pageGrid = document.getElementById('pageGrid');
 const statusEl = document.getElementById('status');
 const toast = document.getElementById('toast');
 const exportBtn = document.getElementById('exportBtn');
+const exportSmallBtn = document.getElementById('exportSmallBtn');
 const fileNameInput = document.getElementById('fileNameInput');
 const selectAllCheckbox = document.getElementById('selectAllCheckbox');
 const deleteSelectedBtn = document.getElementById('deleteSelectedBtn');
@@ -34,7 +35,9 @@ function updateStatus() {
   const selected = pages.filter(p => p.selected).length;
   statusEl.textContent = pages.length ? `${pages.length} halaman/item siap disusun${selected ? ` - ${selected} dipilih` : ''}.` : 'Belum ada file.';
   const hasExportName = getSafeExportFileName().length > 0;
-  exportBtn.disabled = pages.length === 0 || !hasExportName;
+  const exportDisabled = pages.length === 0 || !hasExportName;
+  exportBtn.disabled = exportDisabled;
+  exportSmallBtn.disabled = exportDisabled;
   deleteSelectedBtn.disabled = selected === 0;
   rotateSelectedBtn.disabled = selected === 0;
   selectAllCheckbox.disabled = pages.length === 0;
@@ -463,18 +466,68 @@ async function imageDataUrlToPngBytes(dataUrl, rotation = 0) {
 async function addImagePage(outputPdf, pageInfo) {
   const { bytes, width, height } = await imageDataUrlToPngBytes(pageInfo.imageDataUrl, pageInfo.rotation);
   const embeddedImage = await outputPdf.embedPng(bytes);
-
-  // Frameless image export:
-  // Ukuran halaman PDF dibuat sama persis dengan ukuran gambar yang sudah diputar.
-  // Gambar digambar mulai dari x=0, y=0 dan memenuhi seluruh halaman, tanpa margin,
-  // tanpa A4 canvas, dan tanpa frame putih di sisi mana pun.
   const pdfPage = outputPdf.addPage([width, height]);
-  pdfPage.drawImage(embeddedImage, {
-    x: 0,
-    y: 0,
-    width,
-    height
-  });
+  pdfPage.drawImage(embeddedImage, { x: 0, y: 0, width, height });
+}
+
+async function imageDataUrlToJpegBytes(dataUrl, rotation = 0, quality = 0.74, maxLongSide = 1800) {
+  const img = await loadImageFromDataUrl(dataUrl);
+  const sourceW = img.naturalWidth || img.width;
+  const sourceH = img.naturalHeight || img.height;
+  const rotated = rotation % 180 !== 0;
+  const rotatedW = rotated ? sourceH : sourceW;
+  const rotatedH = rotated ? sourceW : sourceH;
+  const scale = Math.min(1, maxLongSide / Math.max(rotatedW, rotatedH));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(rotatedW * scale));
+  canvas.height = Math.max(1, Math.round(rotatedH * scale));
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.save();
+  ctx.translate(canvas.width / 2, canvas.height / 2);
+  ctx.rotate((rotation * Math.PI) / 180);
+  ctx.drawImage(img, -sourceW * scale / 2, -sourceH * scale / 2, sourceW * scale, sourceH * scale);
+  ctx.restore();
+  const jpegDataUrl = canvas.toDataURL('image/jpeg', quality);
+  const base64 = jpegDataUrl.split(',')[1];
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return { bytes, width: canvas.width, height: canvas.height };
+}
+
+async function addCompressedImagePage(outputPdf, pageInfo) {
+  const { bytes, width, height } = await imageDataUrlToJpegBytes(pageInfo.imageDataUrl, pageInfo.rotation);
+  const embeddedImage = await outputPdf.embedJpg(bytes);
+  const pdfPage = outputPdf.addPage([width, height]);
+  pdfPage.drawImage(embeddedImage, { x: 0, y: 0, width, height });
+}
+
+async function pdfPageToJpegBytes(arrayBuffer, pageNumber, rotation = 0, quality = 0.72, scale = 1.55) {
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer.slice(0) }).promise;
+  const page = await pdf.getPage(pageNumber);
+  const viewport = page.getViewport({ scale, rotation });
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(viewport.width));
+  canvas.height = Math.max(1, Math.round(viewport.height));
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  await page.render({ canvasContext: ctx, viewport }).promise;
+  const jpegDataUrl = canvas.toDataURL('image/jpeg', quality);
+  const base64 = jpegDataUrl.split(',')[1];
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return { bytes, width: viewport.width / scale, height: viewport.height / scale };
+}
+
+async function addCompressedPdfPage(outputPdf, pageInfo) {
+  const { bytes, width, height } = await pdfPageToJpegBytes(pageInfo.arrayBuffer, pageInfo.pageNumber, pageInfo.rotation);
+  const embeddedImage = await outputPdf.embedJpg(bytes);
+  const pdfPage = outputPdf.addPage([width, height]);
+  pdfPage.drawImage(embeddedImage, { x: 0, y: 0, width, height });
 }
 
 ['dragenter', 'dragover'].forEach(eventName => {
@@ -549,17 +602,32 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && previewModal.classList.contains('open')) closePreview();
 });
 
-exportBtn.addEventListener('click', async () => {
+function downloadPdfBytes(bytes, exportName) {
+  const blob = new Blob([bytes], { type: 'application/pdf' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = exportName.toLowerCase().endsWith('.pdf') ? exportName : `${exportName}.pdf`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
+async function exportPdf({ small = false } = {}) {
   const exportName = getSafeExportFileName();
   if (!pages.length || !exportName) return;
   syncOrderFromDOM();
   exportBtn.disabled = true;
-  exportBtn.textContent = 'Membuat PDF...';
+  exportSmallBtn.disabled = true;
+  const activeBtn = small ? exportSmallBtn : exportBtn;
+  const originalText = activeBtn.textContent;
+  activeBtn.textContent = small ? 'Mengompres...' : 'Membuat PDF...';
   try {
     const outputPdf = await PDFDocument.create();
     const cache = new Map();
     for (const pageInfo of pages) {
-      if (pageInfo.kind === 'pdf') {
+      if (small) {
+        if (pageInfo.kind === 'pdf') await addCompressedPdfPage(outputPdf, pageInfo);
+        else await addCompressedImagePage(outputPdf, pageInfo);
+      } else if (pageInfo.kind === 'pdf') {
         let sourcePdf = cache.get(pageInfo.fileName + pageInfo.arrayBuffer.byteLength);
         if (!sourcePdf) {
           sourcePdf = await PDFDocument.load(pageInfo.arrayBuffer.slice(0));
@@ -573,21 +641,19 @@ exportBtn.addEventListener('click', async () => {
         await addImagePage(outputPdf, pageInfo);
       }
     }
-    const bytes = await outputPdf.save();
-    const blob = new Blob([bytes], { type: 'application/pdf' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = exportName.toLowerCase().endsWith('.pdf') ? exportName : `${exportName}.pdf`;
-    link.click();
-    URL.revokeObjectURL(link.href);
-    showToast('PDF berhasil dibuat.');
+    const bytes = await outputPdf.save({ useObjectStreams: true });
+    downloadPdfBytes(bytes, exportName);
+    showToast(small ? 'PDF kecil berhasil dibuat.' : 'PDF berhasil dibuat.');
   } catch (err) {
     console.error(err);
     showToast('Gagal membuat PDF. Coba file lain atau refresh browser.');
   } finally {
-    exportBtn.textContent = 'Export PDF';
+    activeBtn.textContent = originalText;
     updateStatus();
   }
-});
+}
+
+exportBtn.addEventListener('click', () => exportPdf({ small: false }));
+exportSmallBtn.addEventListener('click', () => exportPdf({ small: true }));
 
 updateStatus();
