@@ -51,10 +51,18 @@
           <strong id="previewTitle">Preview halaman</strong>
           <span id="previewInfo"></span>
         </div>
-        <button id="closePreviewBtn" class="secondary" type="button">Tutup</button>
+        <div class="preview-header-actions">
+          <button id="zoomOutBtn" type="button" title="Perkecil" class="secondary">− Zoom Out</button>
+          <span id="zoomLevel">100%</span>
+          <button id="zoomInBtn" type="button" title="Perbesar" class="secondary">Zoom In +</button>
+          <button id="zoomResetBtn" type="button" title="Reset" class="secondary">Reset</button>
+          <button id="closePreviewBtn" class="secondary" type="button">Tutup</button>
+        </div>
       </div>
       <div class="preview-body">
-        <canvas id="previewCanvas"></canvas>
+        <div class="preview-canvas-container">
+          <canvas id="previewCanvas"></canvas>
+        </div>
       </div>
     </div>
   </div>

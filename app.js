@@ -17,10 +17,15 @@ const previewCanvas = document.getElementById('previewCanvas');
 const previewTitle = document.getElementById('previewTitle');
 const previewInfo = document.getElementById('previewInfo');
 const closePreviewBtn = document.getElementById('closePreviewBtn');
+const zoomInBtn = document.getElementById('zoomInBtn');
+const zoomOutBtn = document.getElementById('zoomOutBtn');
+const zoomResetBtn = document.getElementById('zoomResetBtn');
+const zoomLevel = document.getElementById('zoomLevel');
 
 let pages = [];
 let sortable;
 let insertMarker = null;
+let previewZoom = 1;
 
 const supportedImageTypes = ['image/jpeg', 'image/png', 'image/webp'];
 const supportedImageExt = ['.jpg', '.jpeg', '.png', '.webp'];
@@ -98,8 +103,14 @@ async function renderPdfPreview(arrayBuffer, pageNumber, canvas, rotation = 0) {
   const ratio = window.devicePixelRatio || 1;
   canvas.width = Math.floor(viewport.width * ratio);
   canvas.height = Math.floor(viewport.height * ratio);
-  canvas.style.width = `${Math.floor(viewport.width)}px`;
-  canvas.style.height = `${Math.floor(viewport.height)}px`;
+  const baseWidth = Math.floor(viewport.width);
+  const baseHeight = Math.floor(viewport.height);
+  canvas.style.width = `${baseWidth}px`;
+  canvas.style.height = `${baseHeight}px`;
+  canvas.dataset.previewWidth = String(baseWidth);
+  canvas.dataset.previewHeight = String(baseHeight);
+  canvas.style.maxWidth = 'none';
+  canvas.style.maxHeight = 'none';
   const context = canvas.getContext('2d');
   context.setTransform(ratio, 0, 0, ratio, 0, 0);
   context.clearRect(0, 0, viewport.width, viewport.height);
@@ -137,6 +148,15 @@ async function openPreview(page) {
   previewTitle.textContent = page.fileName;
   previewInfo.textContent = page.kind === 'pdf' ? `Halaman ${page.pageNumber}` : 'Gambar';
   previewCanvas.getContext('2d').clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+  
+  // Reset zoom saat preview dibuka
+  previewZoom = 1;
+  previewCanvas.style.transform = 'scale(1)';
+  const container = previewCanvas.parentElement;
+  container.style.width = 'auto';
+  container.style.height = 'auto';
+  updateZoomLevel();
+  
   previewModal.classList.add('open');
   previewModal.setAttribute('aria-hidden', 'false');
   try {
@@ -154,6 +174,45 @@ async function openPreview(page) {
 function closePreview() {
   previewModal.classList.remove('open');
   previewModal.setAttribute('aria-hidden', 'true');
+  previewZoom = 1;
+  previewCanvas.style.transform = 'scale(1)';
+  const container = previewCanvas.parentElement;
+  container.style.width = 'auto';
+  container.style.height = 'auto';
+  updateZoomLevel();
+}
+
+function updateZoomLevel() {
+  zoomLevel.textContent = Math.round(previewZoom * 100) + '%';
+}
+
+function applyZoom() {
+  const naturalWidth = Number(previewCanvas.dataset.previewWidth) || previewCanvas.offsetWidth;
+  const naturalHeight = Number(previewCanvas.dataset.previewHeight) || previewCanvas.offsetHeight;
+  previewCanvas.style.transform = 'none';
+  previewCanvas.style.width = `${Math.round(naturalWidth * previewZoom)}px`;
+  previewCanvas.style.height = `${Math.round(naturalHeight * previewZoom)}px`;
+  previewCanvas.style.maxWidth = 'none';
+  previewCanvas.style.maxHeight = 'none';
+  const container = previewCanvas.parentElement;
+  container.style.width = 'auto';
+  container.style.height = 'auto';
+  updateZoomLevel();
+}
+
+function zoomIn() {
+  previewZoom = Math.min(previewZoom + 0.2, 3);
+  applyZoom();
+}
+
+function zoomOut() {
+  previewZoom = Math.max(previewZoom - 0.2, 0.5);
+  applyZoom();
+}
+
+function resetZoom() {
+  previewZoom = 1;
+  applyZoom();
 }
 
 async function renderPdfThumbnail(arrayBuffer, pageNumber, canvas, rotation = 0) {
@@ -352,13 +411,18 @@ function getFileDropIndex(e) {
   if (!cards.length) return 0;
 
   const rows = getCardRows();
-  for (const row of rows) {
+  for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
+    const row = rows[rowIdx];
     const rowMid = row.top + (row.bottom - row.top) / 2;
-    if (e.clientY <= rowMid || e.clientY <= row.bottom) {
+    
+    // Check if we're in this row's vertical range
+    if (e.clientY < row.bottom) {
+      // We're in this row, determine horizontal position
       for (const item of row.items) {
         const midX = item.rect.left + item.rect.width / 2;
         if (e.clientX < midX) return item.index;
       }
+      // Mouse is to the right of all items in this row
       return row.items[row.items.length - 1].index + 1;
     }
   }
@@ -598,6 +662,9 @@ closePreviewBtn.addEventListener('click', closePreview);
 previewModal.addEventListener('click', (e) => {
   if (e.target === previewModal) closePreview();
 });
+zoomInBtn.addEventListener('click', zoomIn);
+zoomOutBtn.addEventListener('click', zoomOut);
+zoomResetBtn.addEventListener('click', resetZoom);
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && previewModal.classList.contains('open')) closePreview();
 });
