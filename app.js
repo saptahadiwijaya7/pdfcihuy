@@ -8,6 +8,7 @@ const statusEl = document.getElementById('status');
 const toast = document.getElementById('toast');
 const exportBtn = document.getElementById('exportBtn');
 const exportSmallBtn = document.getElementById('exportSmallBtn');
+const emailBtn = document.getElementById('emailBtn');
 const fileNameInput = document.getElementById('fileNameInput');
 const selectAllCheckbox = document.getElementById('selectAllCheckbox');
 const deleteSelectedBtn = document.getElementById('deleteSelectedBtn');
@@ -30,6 +31,50 @@ let previewZoom = 1;
 const supportedImageTypes = ['image/jpeg', 'image/png', 'image/webp'];
 const supportedImageExt = ['.jpg', '.jpeg', '.png', '.webp'];
 
+// ====== Export Email (auto ≤ maksimal MB) ======
+// Target ukuran file untuk lampiran email. Ubah angka ini kalau server mail
+// nolak (Gmail hitung ukuran SETELAH encode base64, ± +33%; kalau sering
+// ketolak di 25MB, turunin ke ~18).
+const EMAIL_TARGET_MB = 22;
+const EMAIL_TARGET_BYTES = Math.round(EMAIL_TARGET_MB * 1024 * 1024);
+
+// Tangga kompresi, kualitas terbaik di atas. Email mode nyoba dari atas ke
+// bawah dan berhenti di tier pertama yang ukurannya udah muat.
+const COMPRESS_TIERS = [
+  { label: 'sangat tinggi', quality: 0.85, scale: 2.00, maxLongSide: 2400 },
+  { label: 'tinggi',        quality: 0.78, scale: 1.75, maxLongSide: 2100 },
+  { label: 'menengah+',     quality: 0.72, scale: 1.55, maxLongSide: 1900 },
+  { label: 'menengah',      quality: 0.64, scale: 1.40, maxLongSide: 1700 },
+  { label: 'hemat',         quality: 0.56, scale: 1.25, maxLongSide: 1500 },
+  { label: 'hemat+',        quality: 0.48, scale: 1.10, maxLongSide: 1300 },
+  { label: 'kecil',         quality: 0.42, scale: 0.95, maxLongSide: 1150 },
+  { label: 'kecil+',        quality: 0.36, scale: 0.85, maxLongSide: 1000 },
+  { label: 'mini',          quality: 0.30, scale: 0.75, maxLongSide: 900  },
+];
+
+const exportButtons = [exportBtn, exportSmallBtn, emailBtn];
+
+function formatBytes(n) {
+  if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(2) + ' MB';
+  if (n >= 1024) return Math.round(n / 1024) + ' KB';
+  return n + ' B';
+}
+
+function setExportBusy(busy, activeBtn = null, activeLabel = '') {
+  exportButtons.forEach(b => { b.disabled = busy; });
+  if (busy) {
+    if (activeBtn) {
+      activeBtn.dataset.orig = activeBtn.dataset.orig || activeBtn.textContent;
+      activeBtn.textContent = activeLabel;
+    }
+  } else {
+    exportButtons.forEach(b => {
+      if (b.dataset.orig) { b.textContent = b.dataset.orig; delete b.dataset.orig; }
+    });
+    updateStatus();
+  }
+}
+
 function showToast(message) {
   toast.textContent = message;
   toast.classList.add('show');
@@ -43,6 +88,7 @@ function updateStatus() {
   const exportDisabled = pages.length === 0 || !hasExportName;
   exportBtn.disabled = exportDisabled;
   exportSmallBtn.disabled = exportDisabled;
+  emailBtn.disabled = exportDisabled;
   deleteSelectedBtn.disabled = selected === 0;
   rotateSelectedBtn.disabled = selected === 0;
   selectAllCheckbox.disabled = pages.length === 0;
@@ -561,8 +607,9 @@ async function imageDataUrlToJpegBytes(dataUrl, rotation = 0, quality = 0.74, ma
   return { bytes, width: canvas.width, height: canvas.height };
 }
 
-async function addCompressedImagePage(outputPdf, pageInfo) {
-  const { bytes, width, height } = await imageDataUrlToJpegBytes(pageInfo.imageDataUrl, pageInfo.rotation);
+async function addCompressedImagePage(outputPdf, pageInfo, opts = {}) {
+  const { quality = 0.74, maxLongSide = 1800 } = opts;
+  const { bytes, width, height } = await imageDataUrlToJpegBytes(pageInfo.imageDataUrl, pageInfo.rotation, quality, maxLongSide);
   const embeddedImage = await outputPdf.embedJpg(bytes);
   const pdfPage = outputPdf.addPage([width, height]);
   pdfPage.drawImage(embeddedImage, { x: 0, y: 0, width, height });
@@ -587,8 +634,9 @@ async function pdfPageToJpegBytes(arrayBuffer, pageNumber, rotation = 0, quality
   return { bytes, width: viewport.width / scale, height: viewport.height / scale };
 }
 
-async function addCompressedPdfPage(outputPdf, pageInfo) {
-  const { bytes, width, height } = await pdfPageToJpegBytes(pageInfo.arrayBuffer, pageInfo.pageNumber, pageInfo.rotation);
+async function addCompressedPdfPage(outputPdf, pageInfo, opts = {}) {
+  const { quality = 0.72, scale = 1.55 } = opts;
+  const { bytes, width, height } = await pdfPageToJpegBytes(pageInfo.arrayBuffer, pageInfo.pageNumber, pageInfo.rotation, quality, scale);
   const embeddedImage = await outputPdf.embedJpg(bytes);
   const pdfPage = outputPdf.addPage([width, height]);
   pdfPage.drawImage(embeddedImage, { x: 0, y: 0, width, height });
@@ -678,49 +726,93 @@ function downloadPdfBytes(bytes, exportName) {
   URL.revokeObjectURL(link.href);
 }
 
+// Builder bersama. mode: 'full' (copy asli), 'small' (kompres default),
+// 'compress' (kompres pakai tier tertentu). Return Uint8Array bytes PDF.
+async function buildPdfBytes({ mode = 'full', tier = null } = {}) {
+  const outputPdf = await PDFDocument.create();
+  const cache = new Map();
+  for (const pageInfo of pages) {
+    if (mode === 'compress' || mode === 'small') {
+      const imgOpts = tier ? { quality: tier.quality, maxLongSide: tier.maxLongSide } : undefined;
+      const pdfOpts = tier ? { quality: tier.quality, scale: tier.scale } : undefined;
+      if (pageInfo.kind === 'pdf') await addCompressedPdfPage(outputPdf, pageInfo, pdfOpts);
+      else await addCompressedImagePage(outputPdf, pageInfo, imgOpts);
+    } else if (pageInfo.kind === 'pdf') {
+      let sourcePdf = cache.get(pageInfo.fileName + pageInfo.arrayBuffer.byteLength);
+      if (!sourcePdf) {
+        sourcePdf = await PDFDocument.load(pageInfo.arrayBuffer.slice(0));
+        cache.set(pageInfo.fileName + pageInfo.arrayBuffer.byteLength, sourcePdf);
+      }
+      const [copiedPage] = await outputPdf.copyPages(sourcePdf, [pageInfo.pageNumber - 1]);
+      const originalRotation = copiedPage.getRotation().angle || 0;
+      copiedPage.setRotation(degrees((originalRotation + pageInfo.rotation) % 360));
+      outputPdf.addPage(copiedPage);
+    } else {
+      await addImagePage(outputPdf, pageInfo);
+    }
+  }
+  return outputPdf.save({ useObjectStreams: true });
+}
+
 async function exportPdf({ small = false } = {}) {
   const exportName = getSafeExportFileName();
   if (!pages.length || !exportName) return;
   syncOrderFromDOM();
-  exportBtn.disabled = true;
-  exportSmallBtn.disabled = true;
   const activeBtn = small ? exportSmallBtn : exportBtn;
-  const originalText = activeBtn.textContent;
-  activeBtn.textContent = small ? 'Mengompres...' : 'Membuat PDF...';
+  setExportBusy(true, activeBtn, small ? 'Mengompres...' : 'Membuat PDF...');
   try {
-    const outputPdf = await PDFDocument.create();
-    const cache = new Map();
-    for (const pageInfo of pages) {
-      if (small) {
-        if (pageInfo.kind === 'pdf') await addCompressedPdfPage(outputPdf, pageInfo);
-        else await addCompressedImagePage(outputPdf, pageInfo);
-      } else if (pageInfo.kind === 'pdf') {
-        let sourcePdf = cache.get(pageInfo.fileName + pageInfo.arrayBuffer.byteLength);
-        if (!sourcePdf) {
-          sourcePdf = await PDFDocument.load(pageInfo.arrayBuffer.slice(0));
-          cache.set(pageInfo.fileName + pageInfo.arrayBuffer.byteLength, sourcePdf);
-        }
-        const [copiedPage] = await outputPdf.copyPages(sourcePdf, [pageInfo.pageNumber - 1]);
-        const originalRotation = copiedPage.getRotation().angle || 0;
-        copiedPage.setRotation(degrees((originalRotation + pageInfo.rotation) % 360));
-        outputPdf.addPage(copiedPage);
-      } else {
-        await addImagePage(outputPdf, pageInfo);
-      }
-    }
-    const bytes = await outputPdf.save({ useObjectStreams: true });
+    const bytes = await buildPdfBytes({ mode: small ? 'small' : 'full' });
     downloadPdfBytes(bytes, exportName);
-    showToast(small ? 'PDF kecil berhasil dibuat.' : 'PDF berhasil dibuat.');
+    showToast(small ? `PDF kecil dibuat (${formatBytes(bytes.length)}).` : `PDF dibuat (${formatBytes(bytes.length)}).`);
   } catch (err) {
     console.error(err);
     showToast('Gagal membuat PDF. Coba file lain atau refresh browser.');
   } finally {
-    activeBtn.textContent = originalText;
-    updateStatus();
+    setExportBusy(false);
+  }
+}
+
+// Auto: cari kualitas paling tinggi yang ukuran filenya masih ≤ target email.
+async function exportForEmail() {
+  const exportName = getSafeExportFileName();
+  if (!pages.length || !exportName) return;
+  syncOrderFromDOM();
+  setExportBusy(true, emailBtn, 'Cek ukuran...');
+  try {
+    // 1) Coba kualitas penuh dulu — kalau udah muat, ini yang terbaik.
+    let bytes = await buildPdfBytes({ mode: 'full' });
+    if (bytes.length <= EMAIL_TARGET_BYTES) {
+      downloadPdfBytes(bytes, exportName);
+      showToast(`Siap email: ${formatBytes(bytes.length)} (kualitas penuh, ≤${EMAIL_TARGET_MB}MB).`);
+      return;
+    }
+
+    // 2) Turun bertahap sampai muat. Berhenti di tier pertama yang lolos.
+    let best = bytes;
+    for (const tier of COMPRESS_TIERS) {
+      emailBtn.textContent = `Kompres (${tier.label})...`;
+      bytes = await buildPdfBytes({ mode: 'compress', tier });
+      if (bytes.length < best.length) best = bytes;
+      if (bytes.length <= EMAIL_TARGET_BYTES) {
+        downloadPdfBytes(bytes, exportName);
+        showToast(`Siap email: ${formatBytes(bytes.length)} (kualitas ${tier.label}, ≤${EMAIL_TARGET_MB}MB).`);
+        return;
+      }
+    }
+
+    // 3) Mentok — kasih hasil terkecil + peringatan.
+    downloadPdfBytes(best, exportName);
+    showToast(`Belum bisa ≤${EMAIL_TARGET_MB}MB. Terkecil: ${formatBytes(best.length)}. Kurangi halaman/gambar resolusi tinggi.`);
+  } catch (err) {
+    console.error(err);
+    showToast('Gagal membuat PDF email. Coba lagi atau refresh browser.');
+  } finally {
+    setExportBusy(false);
   }
 }
 
 exportBtn.addEventListener('click', () => exportPdf({ small: false }));
 exportSmallBtn.addEventListener('click', () => exportPdf({ small: true }));
+emailBtn.addEventListener('click', exportForEmail);
 
 updateStatus();
